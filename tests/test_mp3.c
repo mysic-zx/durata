@@ -209,6 +209,78 @@ static void test_mp3_mpeg2(void) {
     du_buf_free(&b);
 }
 
+/* ---- 回归：帧头 layer 位编码 ≠ 逻辑层号 ----
+ * 帧头编码是 11=Layer I、10=Layer II、01=Layer III（00 保留）。
+ * 曾经位值被当逻辑层号查表，Layer III（真实 mp3 全是位值 01）被当
+ * Layer I 算帧长，帧长全错、双帧验证全失败。合成器当初也用同样的
+ * 错误位编码造数据，"自洽但不规范"，测试全绿是假象——这两个用例
+ * 把位值映射和合成器产出都钉死在规范上。 */
+static void test_mp3_layer_bit_mapping(void) {
+    du_mp3_frame_info_t fi;
+
+    /* MPEG1：位值 01 = Layer III，spf 1152、coef 144、mul 1，
+     * 查 M1L3 表（idx13 = 256kbps，与 L1/L2 表区分） */
+    fi = du_mp3_frame_info(3, 1, 13, 0);
+    DU_CHECK_EQ(fi.spf, 1152);
+    DU_CHECK_EQ(fi.coef, 144);
+    DU_CHECK_EQ(fi.mul, 1);
+    DU_CHECK_EQ(fi.kbps, 256);
+    DU_CHECK_EQ(fi.sr, 44100);
+
+    /* MPEG1：位值 11 = Layer I，spf 384、coef 12、mul 4，M1L1 表 idx13 = 416 */
+    fi = du_mp3_frame_info(3, 3, 13, 0);
+    DU_CHECK_EQ(fi.spf, 384);
+    DU_CHECK_EQ(fi.coef, 12);
+    DU_CHECK_EQ(fi.mul, 4);
+    DU_CHECK_EQ(fi.kbps, 416);
+
+    /* MPEG1：位值 10 = Layer II，spf 1152、coef 144，M1L2 表 idx13 = 320 */
+    fi = du_mp3_frame_info(3, 2, 13, 0);
+    DU_CHECK_EQ(fi.spf, 1152);
+    DU_CHECK_EQ(fi.coef, 144);
+    DU_CHECK_EQ(fi.kbps, 320);
+
+    /* MPEG2/2.5 同理：位值 01 = L3（spf 576、coef 72）、11 = L1、10 = L2 */
+    fi = du_mp3_frame_info(2, 1, 8, 0);    /* 位值 01 → L3，M2L23 idx8 = 64 */
+    DU_CHECK_EQ(fi.spf, 576);
+    DU_CHECK_EQ(fi.coef, 72);
+    DU_CHECK_EQ(fi.kbps, 64);
+    fi = du_mp3_frame_info(2, 3, 8, 0);    /* 位值 11 → L1，spf 384、coef 12 */
+    DU_CHECK_EQ(fi.spf, 384);
+    DU_CHECK_EQ(fi.coef, 12);
+    DU_CHECK_EQ(fi.mul, 4);
+
+    /* 合成器按逻辑层号填位：L3 → 位值 01、L2 → 10、L1 → 11 */
+    du_buf_t b; du_buf_init(&b);
+    du_synth_mp3_head(&b, 3, 3, 9, 0, 0, 0);
+    DU_CHECK_EQ((b.data[1] >> 1) & 3, 1);
+    b.len = 0;
+    du_synth_mp3_head(&b, 3, 2, 9, 0, 0, 0);
+    DU_CHECK_EQ((b.data[1] >> 1) & 3, 2);
+    b.len = 0;
+    du_synth_mp3_head(&b, 3, 1, 9, 0, 0, 0);
+    DU_CHECK_EQ((b.data[1] >> 1) & 3, 3);
+    du_buf_free(&b);
+}
+
+static void test_mp3_layer1_stream(void) {
+    du_buf_t b; du_buf_init(&b);
+    /* 端到端：MPEG1 Layer I 流（128kbps? M1L1 idx9 = 288kbps，
+     * flen = 12×288000/44100×4 = 78×4 = 312，spf 384） */
+    for (int i = 0; i < 10; i++) {
+        du_synth_mp3_head(&b, 3, 1, 9, 0, 0, 0);
+        for (int j = 0; j < 312 - 4; j++) {
+            du_buf_u8(&b, (uint8_t)(0x40 + ((i * 37 + j * 11) & 0x3F)));
+        }
+    }
+    du_result_t r; memset(&r, 0, sizeof(r));
+    DU_CHECK_EQ(probe_buf(&b, DU_FORMAT_MP3, NULL, &r), DU_OK);
+    DU_CHECK_EQ(r.frames, 10);
+    DU_CHECK_EQ(r.duration_samples, 10ull * 384);
+    DU_CHECK_EQ(r.audio_bytes, 10ull * 312);
+    du_buf_free(&b);
+}
+
 static void test_mp3_strict(void) {
     du_buf_t b; du_buf_init(&b);
     du_synth_mp3_with_fake_sync(&b, 20, 10);
@@ -239,6 +311,8 @@ void du_test_mp3(void) {
     DU_TEST_RUN("mp3/lame gapless", test_mp3_lame_gapless);
     DU_TEST_RUN("mp3/vbr flag", test_mp3_vbr);
     DU_TEST_RUN("mp3/mpeg2 layer3", test_mp3_mpeg2);
+    DU_TEST_RUN("mp3/layer bit mapping", test_mp3_layer_bit_mapping);
+    DU_TEST_RUN("mp3/layer1 stream", test_mp3_layer1_stream);
     DU_TEST_RUN("mp3/strict", test_mp3_strict);
     DU_TEST_RUN("mp3/garbage only", test_mp3_garbage_only);
 }
