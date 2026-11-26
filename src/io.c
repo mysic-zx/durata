@@ -5,47 +5,87 @@
  * mem 模式全程零分配（文档 §8.1 外部内存模式）。
  */
 #include "internal.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
-/* 底层"任意位置读"封装（只给 path 模式用）                              */
+/* 底层"任意位置读"封装（只给 path 模式用）。
+ *
+ * 用 fd + lseek 而不是 FILE*：Android Bionic 在 API 24 之前没有
+ * fseeko/ftello，32 位 ABI 的 off_t 还是 32 位——大文件必须显式走
+ * lseek64（API 9+，不受 _FILE_OFFSET_BITS 影响）。Windows 走
+ * _lseeki64/_read，Apple/Linux 用 lseek（off_t 64 位）。             */
 /* ------------------------------------------------------------------ */
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+typedef long long du_file_off;
+#define DU_OPEN_RDONLY(p) _open((p), _O_RDONLY | _O_BINARY)
+#define DU_SEEK(fd, off) _lseeki64((fd), (du_file_off)(off), SEEK_SET)
+#define DU_READ(fd, dst, n) _read((fd), (dst), (unsigned int)(n))
+#define DU_CLOSE(fd) _close((fd))
+static int64_t du_fd_size(int fd) {
+    du_file_off cur = DU_SEEK(fd, 0);
+    du_file_off end = _lseeki64(fd, 0, SEEK_END);
+    _lseeki64(fd, cur, SEEK_SET);
+    return (int64_t)end;
+}
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#if defined(__ANDROID__)
+#include <sys/stat.h>
+typedef off64_t du_file_off;
+#define DU_SEEK(fd, off) lseek64((fd), (off), SEEK_SET)
+static int64_t du_fd_size(int fd) {
+    struct stat64 st;
+    if (fstat64(fd, &st) != 0) return -1;
+    return (int64_t)st.st_size;
+}
+#else
+typedef off_t du_file_off;
+#define DU_SEEK(fd, off) lseek((fd), (off), SEEK_SET)
+static int64_t du_fd_size(int fd) {
+    struct stat st;
+    if (fstat(fd, &st) != 0) return -1;
+    return (int64_t)st.st_size;
+}
+#endif
+#define DU_OPEN_RDONLY(p) open((p), O_RDONLY)
+#define DU_READ(fd, dst, n) read((fd), (dst), (size_t)(n))
+#define DU_CLOSE(fd) close((fd))
+#endif
+
 typedef struct du_file_handle {
-    FILE* f;
+    int fd;
 } du_file_handle_t;
 
 static int64_t du_file_read(void* user, uint64_t off, void* dst, int64_t n) {
     du_file_handle_t* h = (du_file_handle_t*)user;
-#ifdef _WIN32
-    if (_fseeki64(h->f, (long long)off, SEEK_SET) != 0) return -1;
-#else
-    if (fseeko(h->f, (off_t)off, SEEK_SET) != 0) return -1;
-#endif
-    size_t got = fread(dst, 1, (size_t)n, h->f);
-    return (int64_t)got;
+    if (DU_SEEK(h->fd, (du_file_off)off) < 0) return -1;
+    int64_t total = 0;
+    while (total < n) {
+        int64_t got = (int64_t)DU_READ(h->fd, (char*)dst + total, n - total);
+        if (got <= 0) break;
+        total += got;
+    }
+    return total;
 }
 
 static int64_t du_file_size(void* user) {
+    return du_fd_size(((du_file_handle_t*)user)->fd);
+}
+
+static void du_file_close(void* user) {
     du_file_handle_t* h = (du_file_handle_t*)user;
-#ifdef _WIN32
-    long long cur = _ftelli64(h->f);
-    _fseeki64(h->f, 0, SEEK_END);
-    long long end = _ftelli64(h->f);
-    _fseeki64(h->f, cur, SEEK_SET);
-#else
-    off_t cur = ftello(h->f);
-    fseeko(h->f, 0, SEEK_END);
-    off_t end = ftello(h->f);
-    fseeko(h->f, cur, SEEK_SET);
-#endif
-    return (int64_t)end;
+    if (h->fd >= 0) DU_CLOSE(h->fd);
+    free(h);
 }
 
 static const du_io_vtable DU_FILE_VT = {
-    DURATA_ABI_VERSION, du_file_read, du_file_size, NULL,
+    DURATA_ABI_VERSION, du_file_read, du_file_size, du_file_close,
 };
 
 /* ------------------------------------------------------------------ */
@@ -70,8 +110,10 @@ static int64_t du_mem_size(void* user) {
     return (int64_t)((du_mem_handle_t*)user)->len;
 }
 
+static void du_mem_close(void* user) { free(user); }
+
 static const du_io_vtable DU_MEM_VT = {
-    DURATA_ABI_VERSION, du_mem_read, du_mem_size, NULL,
+    DURATA_ABI_VERSION, du_mem_read, du_mem_size, du_mem_close,
 };
 
 /* ------------------------------------------------------------------ */
@@ -92,14 +134,14 @@ du_status_t du_source_open_path(const char* path, du_source_t** out) {
     if (path == NULL || out == NULL) return DU_ERR_INVALID_ARG;
     du_file_handle_t* h = (du_file_handle_t*)calloc(1, sizeof(*h));
     if (h == NULL) return DU_ERR_NOMEM;
-    h->f = fopen(path, "rb");
-    if (h->f == NULL) {
+    h->fd = DU_OPEN_RDONLY(path);
+    if (h->fd < 0) {
         free(h);
         return DU_ERR_IO;
     }
     du_source_t* s = source_new(&DU_FILE_VT, h);
     if (s == NULL) {
-        fclose(h->f);
+        DU_CLOSE(h->fd);
         free(h);
         return DU_ERR_NOMEM;
     }
@@ -144,7 +186,6 @@ du_status_t du_source_open_custom(const du_io_vtable* vt, void* user, du_source_
 void du_source_close(du_source_t* s) {
     if (s == NULL) return;
     if (s->vt && s->vt->close) s->vt->close(s->user);
-    if (s->vt == &DU_FILE_VT || s->vt == &DU_MEM_VT) free(s->user);
     free(s->window);
     free(s);
 }

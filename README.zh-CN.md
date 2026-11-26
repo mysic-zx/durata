@@ -31,6 +31,15 @@ cmake --build build
 
 CMake 选项：`DURATA_BUILD_SHARED`（默认静态）、`DURATA_ENABLE_MP3/MP4/FLAC/OGG/WAV`（编译期裁剪）、`DURATA_BUILD_TESTS`。
 
+## 移动端打包
+
+```bash
+./scripts/build_xcframework.sh   # iOS 静态 xcframework：device arm64 + 模拟器 arm64/x86_64
+./scripts/build_android.sh       # Android 静态库：arm64-v8a、armeabi-v7a、x86、x86_64
+```
+
+产物在 `dist/`。xcframework 内含 `Headers/` 和 `module.modulemap`，Xcode（ObjC/Swift）直接引用——Swift 里 `import Durata` 即可。Android 产物是各 ABI 的 `libdurata.a` 加 `include/durata.h`，供后续 JNI 包装层链接。
+
 ## 使用
 
 ```c

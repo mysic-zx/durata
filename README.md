@@ -31,6 +31,15 @@ cmake --build build
 
 CMake options: `DURATA_BUILD_SHARED` (static by default), `DURATA_ENABLE_MP3/MP4/FLAC/OGG/WAV` (compile-time trimming), `DURATA_BUILD_TESTS`.
 
+## Packaging for mobile
+
+```bash
+./scripts/build_xcframework.sh   # iOS static xcframework: device arm64 + simulator arm64/x86_64
+./scripts/build_android.sh       # Android static libs: arm64-v8a, armeabi-v7a, x86, x86_64
+```
+
+Outputs land in `dist/`. The xcframework bundles `Headers/` and a `module.modulemap`, so Xcode (ObjC/Swift) can use it directly — `import Durata` in Swift. Android artifacts are per-ABI `libdurata.a` plus `include/durata.h`, ready for a JNI wrapper to link against.
+
 ## Usage
 
 ```c
