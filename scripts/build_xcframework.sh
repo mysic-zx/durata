@@ -1,7 +1,8 @@
 #!/bin/bash
 # 打包 iOS 静态库 xcframework：
-#   device   = arm64
-#   simulator= arm64 + x86_64
+#   device     = arm64
+#   simulator  = arm64（x86_64 已随 Intel 模拟器退场不再打包）
+#   maccatalyst= arm64 + x86_64（Catalyst 的最低门槛是 iOS 13）
 # 产物：Libs/durata/dist/durata.xcframework（含 Headers + module.modulemap，
 # Xcode / Swift 可直接引，`import Durata`）
 # 参考：docs/design/2026-11-26-durata-audio-duration-library.md §10.1/§11.4
@@ -10,46 +11,83 @@ set -u
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${DIR}/dist"
 BUILD="${DIR}/build-ios"
+IOS_DT=13.0    # iOS/simulator deployment target，与主工程 iOS 13 对齐
+CAT_DT=14.0    # macCatalyst deployment target：Xcode 26 的 clang 对
+               # -macabi 不接受 ios13.x triple（invalid version number），
+               # 实测 14.0 起接受（13.2 也被钳到 minos 14.0）
 
 command -v cmake >/dev/null 2>&1 || { echo "[缺失] cmake：brew install cmake"; exit 1; }
 command -v xcodebuild >/dev/null 2>&1 || { echo "[缺失] xcodebuild：安装 Xcode"; exit 1; }
+command -v lipo >/dev/null 2>&1 || { echo "[缺失] lipo（随 Xcode 提供）"; exit 1; }
 [ -f "${DIR}/include/durata.h" ] || { echo "[缺失] 源码不完整"; exit 1; }
 xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1 || { echo "[缺失] iOS SDK：安装 Xcode"; exit 1; }
+MACOS_SDK=$(xcrun --sdk macosx --show-sdk-path)
 
 echo "---- iOS device (arm64) ----"
+rm -rf "${BUILD}-device"   # 清掉旧缓存：改过架构参数的残留会让 CMake generate 冲突
 cmake -S "${DIR}" -B "${BUILD}-device" \
       -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos \
-      -DCMAKE_OSX_ARCHITECTURES=arm64 \
+      -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=${IOS_DT} \
       -DCMAKE_BUILD_TYPE=Release -DDURATA_BUILD_TESTS=OFF >/dev/null || exit 1
 cmake --build "${BUILD}-device" || exit 1
 
-echo "---- iOS simulator (arm64 + x86_64) ----"
+echo "---- iOS simulator (arm64) ----"
+rm -rf "${BUILD}-sim"
 cmake -S "${DIR}" -B "${BUILD}-sim" \
       -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
-      -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+      -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=${IOS_DT} \
       -DCMAKE_BUILD_TYPE=Release -DDURATA_BUILD_TESTS=OFF >/dev/null || exit 1
 cmake --build "${BUILD}-sim" || exit 1
 
+# ---- macCatalyst：-macabi triple 让 clang 写出 iossupport 平台标记，
+# create-xcframework 才会归入 maccatalyst 切片。-target 只能带单架构，
+# 所以 arm64 / x86_64 各编一次再 lipo 合并。
+# 注意不能用 CMAKE_SYSTEM_NAME=iOS + macosx SDK 组合：CMake 3.22 会拒绝
+# "not an iOS SDK"，这里按 host 平台配置，Catalyst 语义全靠 -target。 ----
+echo "---- macCatalyst (arm64) ----"
+rm -rf "${BUILD}-cat-arm64"
+cmake -S "${DIR}" -B "${BUILD}-cat-arm64" \
+      -DCMAKE_OSX_SYSROOT="${MACOS_SDK}" \
+      -DCMAKE_OSX_ARCHITECTURES=arm64 \
+      -DCMAKE_C_FLAGS="-target arm64-apple-ios${CAT_DT}-macabi" \
+      -DCMAKE_BUILD_TYPE=Release -DDURATA_BUILD_TESTS=OFF >/dev/null || exit 1
+cmake --build "${BUILD}-cat-arm64" || exit 1
+
+echo "---- macCatalyst (x86_64) ----"
+rm -rf "${BUILD}-cat-x64"
+cmake -S "${DIR}" -B "${BUILD}-cat-x64" \
+      -DCMAKE_OSX_SYSROOT="${MACOS_SDK}" \
+      -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+      -DCMAKE_C_FLAGS="-target x86_64-apple-ios${CAT_DT}-macabi" \
+      -DCMAKE_BUILD_TYPE=Release -DDURATA_BUILD_TESTS=OFF >/dev/null || exit 1
+cmake --build "${BUILD}-cat-x64" || exit 1
+
+mkdir -p "${BUILD}-catalyst"
+lipo -create "${BUILD}-cat-arm64/libdurata.a" "${BUILD}-cat-x64/libdurata.a" \
+     -output "${BUILD}-catalyst/libdurata.a" || exit 1
+
 echo "---- Headers + modulemap ----"
-rm -rf "${OUT}/ios-device-headers" "${OUT}/ios-sim-headers"
-mkdir -p "${OUT}/ios-device-headers" "${OUT}/ios-sim-headers"
-cp "${DIR}/include/durata.h" "${OUT}/ios-device-headers/"
-cp "${DIR}/include/durata.h" "${OUT}/ios-sim-headers/"
-cat > "${OUT}/ios-device-headers/module.modulemap" <<'EOF'
+rm -rf "${OUT}/ios-device-headers" "${OUT}/ios-sim-headers" "${OUT}/ios-cat-headers"
+mkdir -p "${OUT}/ios-device-headers" "${OUT}/ios-sim-headers" "${OUT}/ios-cat-headers"
+for h in "${OUT}/ios-device-headers" "${OUT}/ios-sim-headers" "${OUT}/ios-cat-headers"; do
+    cp "${DIR}/include/durata.h" "${h}/"
+    cat > "${h}/module.modulemap" <<'EOF'
 module Durata {
     header "durata.h"
     export *
 }
 EOF
-cp "${OUT}/ios-device-headers/module.modulemap" "${OUT}/ios-sim-headers/"
+done
 
 echo "---- create-xcframework ----"
 rm -rf "${OUT}/durata.xcframework"
 xcodebuild -create-xcframework \
     -library "${BUILD}-device/libdurata.a" -headers "${OUT}/ios-device-headers" \
     -library "${BUILD}-sim/libdurata.a" -headers "${OUT}/ios-sim-headers" \
+    -library "${BUILD}-catalyst/libdurata.a" -headers "${OUT}/ios-cat-headers" \
     -output "${OUT}/durata.xcframework" || exit 1
 
 lipo -info "${OUT}/durata.xcframework/ios-arm64/libdurata.a"
-lipo -info "${OUT}/durata.xcframework/ios-arm64_x86_64-simulator/libdurata.a"
+lipo -info "${OUT}/durata.xcframework/ios-arm64-simulator/libdurata.a"
+lipo -info "${OUT}/durata.xcframework/ios-arm64_x86_64-maccatalyst/libdurata.a"
 echo "[ok] ${OUT}/durata.xcframework"
