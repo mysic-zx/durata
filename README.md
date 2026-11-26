@@ -1,25 +1,27 @@
 # durata
 
-跨端音频时长精确计算库。C11 核心 + 稳定 C ABI，零第三方依赖，不链接 ffmpeg。
+**English** | [简体中文](README.zh-CN.md)
 
-## 特性
+Cross-platform library for accurate audio duration measurement. C11 core with a stable C ABI, zero third-party dependencies, no ffmpeg linkage.
 
-- **精确**：MP3 逐帧扫描取真值（完整帧头校验 + 双帧验证抗假同步），不依赖可能被污染的 Xing 等元数据；M4A 取 stts 样本级时长；FLAC/WAV/OGG 各取容器规范的权威字段
-- **快**：单次顺序读 + 滑动窗口，1 小时 320kbps MP3 全扫 < 0.5 s（理论预算，见设计文档 §13）
-- **零分配**：`du_source_open_mem` 模式全程 0 次 malloc，可跑在实时音频线程
-- **跨端一致**：全程整数累加，最后一次除法出秒；同一文件在任意平台/编译器下 `duration_samples` 完全一致
-- **可裁剪**：每种格式都能编译期关掉（`-DDURATA_ENABLE_OGG=OFF` 等）
-- **可嵌入**：mmap 之外提供自定义 IO vtable（WASM / Android AssetManager / 网络缓存入口）
+## Features
 
-支持格式：MP3（MPEG1/2/2.5，含 VBR/ABR/free-format/LAME gapless）、M4A/MP4（AAC/ALAC）、FLAC（含流式 unknown-length）、WAV/AIFF/RF64、OGG（Vorbis/Opus/FLAC-in-Ogg）。
+- **Accurate**: MP3 duration comes from a full frame-by-frame scan (strict header validation + double-sync verification against false syncs), never trusting metadata that may be corrupted (Xing, etc.). M4A uses the sample-level `stts` duration. FLAC/WAV/OGG each use the authoritative field defined by their container spec.
+- **Fast**: single sequential read + sliding window; a 1-hour 320 kbps MP3 full scan finishes in well under 0.5 s (theoretical budget, see the design doc §13).
+- **Zero allocation**: `du_source_open_mem` runs with 0 mallocs — safe on real-time audio threads.
+- **Deterministic across platforms**: everything is accumulated in integers; the one division to seconds happens at the end. The same file yields byte-identical `duration_samples` on any platform/compiler.
+- **Trim at compile time**: every format can be disabled at build time (`-DDURATA_ENABLE_OGG=OFF`, etc.).
+- **Embeddable**: besides reading files, a custom IO vtable is provided (entry point for WASM, Android AssetManager, network caches).
 
-## 构建
+Supported formats: MP3 (MPEG1/2/2.5, including VBR/ABR/free-format/LAME gapless), M4A/MP4 (AAC/ALAC), FLAC (including streaming unknown-length), WAV/AIFF/RF64, OGG (Vorbis/Opus/FLAC-in-Ogg).
+
+## Build
 
 ```bash
-./init.sh --build     # 配置 + 编译 + 跑全部单元测试
+./init.sh --build     # configure + build + run the full test suite
 ```
 
-或直接：
+Or directly:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -27,9 +29,9 @@ cmake --build build
 ./build/tests/du_test
 ```
 
-CMake 选项：`DURATA_BUILD_SHARED`（默认静态）、`DURATA_ENABLE_MP3/MP4/FLAC/OGG/WAV`（编译期裁剪）、`DURATA_BUILD_TESTS`。
+CMake options: `DURATA_BUILD_SHARED` (static by default), `DURATA_ENABLE_MP3/MP4/FLAC/OGG/WAV` (compile-time trimming), `DURATA_BUILD_TESTS`.
 
-## 使用
+## Usage
 
 ```c
 #include "durata.h"
@@ -37,19 +39,19 @@ CMake 选项：`DURATA_BUILD_SHARED`（默认静态）、`DURATA_ENABLE_MP3/MP4/
 du_result_t r;
 du_status_t st = du_probe_path("music.mp3", DU_FORMAT_AUTO, NULL, &r);
 if (st == DU_OK) {
-    printf("%.3f 秒，%u Hz，isVBR=%d\n",
+    printf("%.3f s, %u Hz, isVBR=%d\n",
            r.duration_sec, r.sample_rate, du_result_is_vbr(&r));
 }
 ```
 
-比较/排序请用整数 `r.duration_samples`，不要用浮点 `duration_sec`。
+Use the integer `r.duration_samples` for comparisons/sorting — not the floating-point `duration_sec`.
 
-自定义读源（WASM、AssetManager 等）走 `du_source_open_custom`，vtable 只有 read/size/close 三个函数指针，read 带显式偏移、无状态可重入。
+For custom readers (WASM, AssetManager, etc.) use `du_source_open_custom`. The vtable is just three function pointers (read/size/close); `read` takes an explicit offset, is stateless and reentrant.
 
-## 测试
+## Tests
 
-29 项单元测试全部由合成数据驱动，零外部语料、可离线跑；另外用真实 MP3/M4A/AIFF 与 afinfo 做过对照验证。
+All 29 unit tests are driven by synthesized data — no external corpus, fully offline. The parser has additionally been verified against real MP3/M4A/AIFF files using `afinfo` as the reference.
 
-## 许可证
+## License
 
-MIT，见 [LICENSE](LICENSE)。
+MIT, see [LICENSE](LICENSE).
