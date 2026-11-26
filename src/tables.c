@@ -37,17 +37,23 @@ du_mp3_frame_info_t du_mp3_frame_info(uint32_t version, uint32_t layer,
         return out;
     }
 
+    /* 帧头 layer 位编码：11=Layer I、10=Layer II、01=Layer III（00 保留）。
+     * 调用方传的是原始位值，这里转成逻辑层号：1=I、2=II、3=III。
+     * 不转的话 Layer III（真实 mp3 全是它）会被当成 Layer I 查表，
+     * 帧长全错、双帧验证永远失败（实测踩过：ffmpeg/libmp3lame 输出全部 NO_SYNC）。 */
+    uint32_t lay = (layer == 3) ? 1 : (layer == 2) ? 2 : 3;
+
     const uint16_t* br = NULL;
     if (version == 3) {                       /* MPEG1 */
-        br = (layer == 1) ? DU_BR_M1L1 : (layer == 2) ? DU_BR_M1L2 : DU_BR_M1L3;
-        out.spf = (layer == 1) ? 384 : 1152;
-        out.coef = (layer == 1) ? 12 : 144;
-        out.mul = (layer == 1) ? 4 : 1;
+        br = (lay == 1) ? DU_BR_M1L1 : (lay == 2) ? DU_BR_M1L2 : DU_BR_M1L3;
+        out.spf = (lay == 1) ? 384 : 1152;
+        out.coef = (lay == 1) ? 12 : 144;
+        out.mul = (lay == 1) ? 4 : 1;
     } else {                                  /* MPEG2 / MPEG2.5 */
-        br = (layer == 1) ? DU_BR_M2L1 : DU_BR_M2L23;
-        out.spf = (layer == 1) ? 384 : (layer == 2) ? 1152 : 576;
-        out.coef = (layer == 1) ? 12 : (layer == 2) ? 144 : 72;
-        out.mul = (layer == 1) ? 4 : 1;
+        br = (lay == 1) ? DU_BR_M2L1 : DU_BR_M2L23;
+        out.spf = (lay == 1) ? 384 : (lay == 2) ? 1152 : 576;
+        out.coef = (lay == 1) ? 12 : (lay == 2) ? 144 : 72;
+        out.mul = (lay == 1) ? 4 : 1;
     }
     out.kbps = br[br_idx];
     out.sr   = DU_SR[version][sr_idx];

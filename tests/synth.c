@@ -83,8 +83,11 @@ void du_synth_mp3_head(du_buf_t* b, uint32_t version, uint32_t layer,
                        uint32_t br_idx, uint32_t sr_idx, uint32_t mode,
                        uint32_t padding) {
     du_buf_u8(b, 0xFF);
-    /* b1: sync(3) version(2) layer(2) protection(1)=1 无CRC */
-    du_buf_u8(b, (uint8_t)(0xE0 | (version << 3) | (layer << 1) | 1));
+    /* b1: sync(3) version(2) layer(2) protection(1)=1 无CRC
+     * layer 参数是逻辑层号（1=I、2=II、3=III），帧头位值要反过来填：
+     * 帧头编码是 11=I、10=II、01=III，即 4-layer。直接填 layer 会造出
+     * 假的 Layer I 流，与真实 mp3（Layer III，位值 01）对不上。 */
+    du_buf_u8(b, (uint8_t)(0xE0 | (version << 3) | ((4 - layer) << 1) | 1));
     /* b2: bitrate(4) samplerate(2) padding(1) private(1) */
     du_buf_u8(b, (uint8_t)((br_idx << 4) | (sr_idx << 2) | (padding << 1)));
     /* b3: mode(2) modeext(2) copyright(1) original(1) emphasis(2) */
